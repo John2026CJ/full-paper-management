@@ -276,3 +276,288 @@ Papers/                          # 用户文献根目录
 ## 许可证
 
 本技能由 WorkBuddy 技能创建器生成，可自由使用和修改。
+
+
+
+
+
+# Full Paper Management V2 — Complete Literature Management Skill
+
+> Perform seven standardized tasks on academic papers in any folder: collect, rename, deduplicate, convert to Markdown, generate LitsSum literature spreadsheet (with keywords), classify, and incremental ingestion.
+
+## Key Features
+
+- **Seven tasks, complete pipeline** — From scattered papers to a structured knowledge base in one pass
+- **Preview before execution** — Every step supports `--dry-run` for safe preview before committing
+- **Never deletes original files** — All operations are copy/rename/move, never delete
+- **Idempotent** — Repeated executions produce no duplicate data
+- **Auto-backup** — LitsSum.xlsx is automatically backed up with timestamp before any modification
+
+---
+
+## Quick Start
+
+### 1. Install Dependencies
+
+```bash
+pip install PyPDF2 python-docx openpyxl requests
+```
+
+### 2. Trigger the Skill
+
+Use any of the following phrases in WorkBuddy:
+
+- `文献管理` / `整理文献` / `全流程文献管理`
+- `文献重命名` / `去重` / `生成文献表`
+- `分类文献` / `新增文献入库`
+- `process papers` / `manage literature` / `organize papers`
+
+### 3. First Run
+
+```
+Task 1 -> Task 2 -> Task 3 -> Task 4 -> Task 5 -> Task 6
+Collect   Rename    Dedup     MD Convert LitsSum   Classify
+```
+
+### 4. Incremental Run (when new papers are added)
+
+```
+Task 7: Step 0 -> 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7
+        Discover  Rename  Pre-     Identify Dedup Update Classify Summarize
+                 collect  merge
+```
+
+---
+
+## The Seven Tasks
+
+### Task 1: Collect Papers
+
+Gather papers scattered across subfolders into a unified directory `XXX_Combined`.
+
+```bash
+python scripts/file_ops.py collect <source_dir> [--dest <dest_dir>] [--dry-run]
+```
+
+- Recursively scans all subfolders
+- Auto-appends `_number` suffix on name conflicts
+
+### Task 2: Rename Papers
+
+Standardize filenames to `FirstAuthorLastNameYear[suffix].extension` format.
+
+**Naming Rules:**
+- Basic format: `Smith2020.pdf`
+- Conflict fallback: Same last name + same year but different authors → `ZhangYuan2020.pdf`, `ZhangFei2020.pdf`
+- Non-English names: Uses pinyin full name on conflict → `WangXiaoming2023.pdf`
+
+**Information Extraction Priority:** PDF metadata > Content parsing > Filename inference > DOI lookup
+
+```bash
+python scripts/file_ops.py rename <target_dir> [--dry-run]
+```
+
+### Task 3: Deduplication
+
+Detect duplicate papers, keep the best version per group, move redundants to `Duplicates` folder.
+
+**Duplicate Criteria (any one):**
+1. Identical DOI
+2. Same author + year + first 40 chars of title
+3. Identical MD5 hash
+4. Filename edit distance ≤ 3 AND same author + year
+
+**Best Version Selection:** Information completeness score (max 10) > Page count > File size > Format priority
+
+```bash
+python scripts/file_ops.py dedup <target_dir> [--move] [--dry-run]
+```
+
+### Task 4: Convert to Markdown (V2 New)
+
+Convert papers in the Combined folder to Markdown, classify into `_Com_md` folder, and detect empty files.
+
+```bash
+# Convert
+python scripts/md_converter.py convert <combined_dir> [--dry-run]
+
+# Classify into _Com_md
+python scripts/file_ops.py classify_md <combined_dir> [--md-dir <com_md_dir>] [--year-map year_map.json] [--dry-run]
+
+# Empty file detection
+python scripts/md_converter.py check <com_md_dir>
+```
+
+**Empty File Thresholds:**
+
+| File Size | Verdict | Action |
+|-----------|---------|--------|
+| 0 KB | Conversion failed | Alert user |
+| < 1 KB | Likely failed | Alert user |
+| ≥ 1 KB | Normal | No action |
+
+### Task 5: Generate / Update LitsSum Spreadsheet
+
+Create or update `LitsSum.xlsx` in the Combined folder.
+
+**Table Structure (V2 adds Column E):**
+
+| Column | Header | Description |
+|--------|--------|-------------|
+| A | Year | Four-digit year; "Unknown" if unextractable |
+| B | Filename | Filename without extension |
+| C | Full Citation (APA) | APA-formatted citation |
+| D | Source Folder | Original folder name |
+| E | Keywords | Up to 5 keywords, semicolon-separated — **V2 New** |
+
+**Keyword Extraction Sources:** DOI lookup > File content word frequency > Title terms
+
+**APA Self-Check (8 mandatory checks after each citation):**
+1. Author format (Last, F. M.)
+2. Year in parentheses with period
+3. Title in sentence case
+4. Journal name in italics
+5. Volume in italics, issue not italicized
+6. Page range format
+7. DOI starts with `https://doi.org/`
+8. No extra punctuation
+
+```bash
+python scripts/metadata_utils.py --batch --apa <target_dir> -o metadata_batch.json
+python scripts/litsum_manager.py update <litsum_path> --entries metadata_batch.json [--dry-run]
+python scripts/litsum_manager.py sort <litsum_path>
+```
+
+### Task 6: Classify Papers (By Year / By Topic) — V2 Enhanced
+
+**Mode A: By Year (default)**
+
+| Year Range | Folder Name |
+|------------|-------------|
+| ≤ 1989 | 1900-1989 |
+| 1990-1999 | 1990-1999 |
+| 2000-2009 | 2000-2009 |
+| 2010-2019 | 2010-2019 |
+| 2020-2029 | 2020-2029 |
+| Unknown | UnknownYear |
+
+**Mode B: By Topic** — V2 New
+
+- Topic source priority: User-provided > LitsSum inference > Filename inference > Ask user
+- Folder naming: `01_Machine_Learning`, `02_NLP`
+- Unclassifiable papers go to `UnClassified`
+
+```bash
+# By year
+python scripts/file_ops.py classify <target_dir> --mode year --year-map year_map.json [--dry-run]
+
+# By topic
+python scripts/file_ops.py classify <target_dir> --mode topic --topics topics.json [--topic-map topic_map.json] [--dry-run]
+```
+
+### Task 7: Incremental Ingestion
+
+Process newly added paper folders without affecting existing data.
+
+```
+Step 0: Discover new source folders
+Step 1: Rename in-place (with conflict fallback)
+Step 2: Copy to Combined (preserve source files)
+Step 3: Identify new papers (compare against LitsSum Column B)
+Step 4: Deduplication (new vs. new + new vs. existing)
+Step 5: Update LitsSum (Column D = source folder, Column E = keywords)
+Step 6: Classify into year/topic folders
+Step 7: Sort + summary statistics table
+```
+
+---
+
+## Script Reference
+
+| Script | Function | Key Commands |
+|--------|----------|--------------|
+| `scripts/metadata_utils.py` | Metadata extraction, DOI parsing, APA construction, keyword extraction, conflict fallback | `--batch --apa` |
+| `scripts/file_ops.py` | File collection, renaming, dedup, year/topic classification, MD classification, empty file detection | `collect` / `rename` / `dedup` / `classify` / `classify_md` |
+| `scripts/litsum_manager.py` | LitsSum.xlsx create, read, update, backup, sort, year mapping | `backup` / `update` / `sort` / `yearmap` |
+| `scripts/md_converter.py` | PDF/DOCX/TXT to Markdown conversion, empty file detection | `convert` / `check` |
+
+---
+
+## Supported File Formats
+
+| Format | Extensions |
+|--------|------------|
+| PDF | .pdf |
+| Word | .docx, .doc |
+| Plain Text | .txt |
+| E-book | .epub, .mobi |
+
+**Excluded:** Hidden files, system files, code files, images, README, Excel, PPT, and other non-literature files.
+
+---
+
+## Global Rules
+
+1. **Preview before execution** — Always run with `--dry-run` first, confirm, then execute
+2. **Never delete originals** — All operations are copy/rename/move
+3. **Five status log** — Success, Skipped, Conflict resolved, Moved, Updated
+4. **Idempotency** — Repeated execution produces no duplicate data
+5. **Auto-backup** — LitsSum.xlsx backed up as `LitsSum_backup_YYYYMMDD_HHmmss.xlsx` before modification
+6. **Error resilience** — Single file failure is logged and skipped; overall pipeline continues
+
+---
+
+## V2 vs V1 Change Summary
+
+| Change | V1 | V2 |
+|--------|----|----|
+| Task count | 6 tasks | **7 tasks** (added MD conversion) |
+| LitsSum columns | A-D (4 columns) | A-E (**added keywords column**) |
+| APA format | Basic rules | **Field-by-field spec + 8 mandatory self-checks** |
+| Classification | Year only | Year / **Topic** |
+| Incremental | Basic flow | **Multi-source folders + rename-before-merge** |
+| Empty file detection | None | **0 KB / < 1 KB / ≥ 1 KB three-tier detection** |
+| Name conflict fallback | None | **Same last name + same year auto-fallback to full name** |
+
+---
+
+## Directory Structure Example
+
+```
+Papers/                          # User's paper root directory
+  ├─ subfolder1/                 # Scattered subfolders
+  ├─ subfolder2/
+  ├─ Papers_Combined/            # Task 1: After collection
+  │   ├─ Smith2020.pdf
+  │   ├─ ZhangYuan2023.pdf
+  │   ├─ 2020-2029/              # Task 6: After classification
+  │   │   ├─ Smith2020.pdf
+  │   │   └─ ZhangYuan2023.pdf
+  │   ├─ 2010-2019/
+  │   ├─ LitsSum.xlsx            # Task 5: Literature spreadsheet
+  │   ├─ Duplicates/             # Task 3: Redundant files
+  │   └─ Papers_Com_md/          # Task 4: Markdown versions
+  │       ├─ 2020-2029/
+  │       │   ├─ Smith2020.md
+  │       │   └─ ZhangYuan2023.md
+  │       └─ UnknownYear/
+  └─ new_papers/                 # New papers (Task 7 incremental)
+```
+
+---
+
+## Dependencies
+
+| Dependency | Purpose |
+|------------|---------|
+| PyPDF2 | PDF metadata extraction and text parsing |
+| python-docx | DOCX text extraction |
+| openpyxl | LitsSum.xlsx read/write |
+| requests | Crossref DOI API calls |
+
+---
+
+## License
+
+Generated by WorkBuddy Skill Creator. Free to use and modify.
+
